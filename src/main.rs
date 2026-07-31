@@ -1,57 +1,40 @@
-use axum::{extract::State, routing::get, Json, Router};
-use serde::Serialize;
-use sqlx::PgPool;
-use std::sync::Arc;
+// File: src/main.rs
 
-// 1. DTO de respuesta con los genéricos explícitos en Option
-#[derive(Serialize, sqlx::FromRow)]
-pub struct KPIGeneral {
-    pub total_reservas: i64,
-    pub ingresos_totales: Option<f64>,
-}
+//! API REST Asíncrona de Analítica sobre PostgreSQL usando Axum y SQLx.
+
+mod config;
+mod handlers;
+mod models;
+mod routes;
+
+use std::env;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
-    // 2. Ajusta esta URL con tus credenciales locales de PostgreSQL
-    let database_url = "postgresql://stays:stays123@localhost:5432/stays";
+    // 1. Cargar las variables de entorno desde el archivo .env
+    dotenvy::dotenv().ok();
 
+    // 2. Obtener la cadena de conexión desde las variables de entorno
+    let database_url = env::var("DATABASE_URL")
+        .expect("La variable DATABASE_URL debe estar configurada en el .env");
 
-    let pool = PgPool::connect(&database_url)
-        .await
-        .expect("Error al conectar con la base de datos");
+    // 3. Inicializar el Pool de PostgreSQL a través de la capa de configuración
+    let pool = config::db::init_pool(&database_url).await;
 
-    // 3. Enrutador
-    let app = Router::new()
-        .route("/api/analytics/summary", get(obtener_resumen_general))
-        .with_state(Arc::new(pool));
+    // 4. Crear el árbol de rutas e inyectarle el pool mediante un Arc (Atomic Reference Counter)
+    let app = routes::create_router(Arc::new(pool));
 
-    // 4. Iniciar Servidor
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
+    // 5. Configurar el puerto y la dirección del servidor web
+    let port = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+    let addr = format!("0.0.0.0:{}", port);
+
+    let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap();
-        
-    println!("🚀 API corriendo en http://localhost:3000");
+
+    println!("🚀 API de Analítica corriendo en http://{}", addr);
+
+    // 6. Arrancar el servidor web HTTP de Axum
     axum::serve(listener, app).await.unwrap();
-}
-
-// 5. Handler con State<Arc<PgPool>> y Json<KPIGeneral> bien tipados
-async fn obtener_resumen_general(
-    State(pool): State<Arc<PgPool>>,
-) -> Json<KPIGeneral> {
-    let query = "
-        SELECT 
-            COUNT(*)::BIGINT as total_reservas,
-            SUM(total_reserva)::FLOAT as ingresos_totales
-        FROM hechos_reservas;
-    ";
-
-    let resultado = sqlx::query_as::<_, KPIGeneral>(query)
-        .fetch_one(&*pool)
-        .await
-        .unwrap_or(KPIGeneral {
-            total_reservas: 0,
-            ingresos_totales: Some(0.0),
-        });
-
-    Json(resultado)
 }
